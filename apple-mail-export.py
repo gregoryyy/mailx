@@ -425,16 +425,21 @@ def write_mbox(
                 if is_partial:
                     partial_count += 1
 
-                # Compute SHA-256 of original (unescaped) message
-                h = hashlib.sha256(rfc822_bytes).hexdigest()
-                hashes[emlx_path.name] = h
-
                 # Generate From_ separator line
                 sender, date_str = _extract_from_and_date(rfc822_bytes)
                 separator = f"From {sender} {date_str}\n".encode("ascii", errors="replace")
 
                 # Escape From lines in body
                 escaped = _escape_from_lines(rfc822_bytes)
+
+                # Compute SHA-256 of message as it will be stored in mbox.
+                # The mbox format requires messages to end with \n, so if the
+                # original doesn't, we normalize before hashing.
+                hash_bytes = rfc822_bytes
+                if not rfc822_bytes.endswith(b"\n"):
+                    hash_bytes = rfc822_bytes + b"\n"
+                h = hashlib.sha256(hash_bytes).hexdigest()
+                hashes[emlx_path.name] = h
 
                 # Write separator + escaped message + blank line terminator
                 try:
