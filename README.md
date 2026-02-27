@@ -78,17 +78,51 @@ Apple Mail data at `~/Library/Mail/` is protected by macOS. Your terminal app ne
 
 ## Development
 
+### Setup
+
 ```bash
-# Set up virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
+```
 
-# Run tests
+### Running Tests
+
+```bash
+# Run the full test suite (90 tests)
 pytest test_apple_mail_export.py -v
 
-# Run built-in self-test
+# Run a specific test class
+pytest test_apple_mail_export.py::TestParseEmlx -v
+pytest test_apple_mail_export.py::TestFromEscaping -v
+pytest test_apple_mail_export.py::TestScanner -v
+pytest test_apple_mail_export.py::TestWriter -v
+pytest test_apple_mail_export.py::TestVerifier -v
+pytest test_apple_mail_export.py::TestCLI -v
+
+# Run a single test
+pytest test_apple_mail_export.py::TestVerifier::test_tampered_mbox_detects_mismatch -v
+```
+
+### Built-in Self-Test
+
+The tool includes a `--self-test` flag that runs without pytest or a venv. It creates synthetic `.emlx` files in a temp directory, runs the full export pipeline, and verifies the results:
+
+```bash
 python3 apple-mail-export.py --self-test
+```
+
+### Running the Tool
+
+```bash
+# Dry run against real Apple Mail data (requires Full Disk Access)
+python3 apple-mail-export.py --dry-run
+
+# Export all mailboxes
+python3 apple-mail-export.py ~/backup/mail-export/
+
+# Export a single mailbox with verbose output
+python3 apple-mail-export.py --mailbox "INBOX" --verbose ~/backup/mail-export/
 ```
 
 ## How It Works
