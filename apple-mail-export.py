@@ -192,10 +192,28 @@ def scan_mailboxes(
             logger.error(msg)
         return []
 
+    def _permission_help(path: Path) -> str:
+        return (
+            f"Permission denied reading {path}/\n\n"
+            "Apple Mail data is protected by macOS. To grant access:\n"
+            "  1. Open System Settings -> Privacy & Security -> Full Disk Access\n"
+            "  2. Enable access for your terminal app (Terminal.app, iTerm2, etc.)\n"
+            "  3. Restart your terminal and re-run this tool."
+        )
+
     # Find V* subdirectories (V9, V10, etc.)
-    v_dirs = sorted(
-        [d for d in mail_dir.iterdir() if d.is_dir() and d.name.startswith("V")]
-    )
+    try:
+        v_dirs = sorted(
+            [d for d in mail_dir.iterdir() if d.is_dir() and d.name.startswith("V")]
+        )
+    except PermissionError:
+        if logger:
+            logger.error(_permission_help(mail_dir))
+        return []
+    except OSError as e:
+        if logger:
+            logger.error(f"I/O error reading {mail_dir}: {e}")
+        return []
     if not v_dirs:
         # Treat mail_dir itself as root (supports --mail-dir override and self-test)
         v_dirs = [mail_dir]
@@ -203,51 +221,71 @@ def scan_mailboxes(
     mailboxes: list[MailboxInfo] = []
 
     for v_dir in v_dirs:
-        # Find account directories (skip MailData)
-        for account_dir in sorted(v_dir.iterdir()):
-            if not account_dir.is_dir() or account_dir.name == "MailData":
+        # Collect .emlx files grouped by nearest *.mbox ancestor. This handles
+        # both classic *.mbox/Messages and nested Data/*/Messages variants.
+        grouped: dict[Path, list[Path]] = {}
+
+        def on_walk_error(err: OSError) -> None:
+            if logger:
+                logger.warn(f"Cannot read directory {err.filename}: {err.strerror}")
+
+        for dirpath, dirnames, filenames in os.walk(v_dir, onerror=on_walk_error):
+            dp = Path(dirpath)
+
+            # Apple Mail's MailData tree is metadata, not user mailboxes.
+            if "MailData" in dp.parts:
+                dirnames[:] = []
+                continue
+            if "MailData" in dirnames:
+                dirnames.remove("MailData")
+
+            emlx_names = [name for name in filenames if name.lower().endswith(".emlx")]
+            if not emlx_names:
                 continue
 
-            account_id = account_dir.name
+            # Find nearest mailbox container for this directory.
+            mailbox_root: Optional[Path] = None
+            cursor = dp
+            while True:
+                if cursor.name.endswith(".mbox"):
+                    mailbox_root = cursor
+                    break
+                if cursor == v_dir or cursor.parent == cursor:
+                    break
+                cursor = cursor.parent
 
-            # Recursively find .mbox directories with Messages/ subdirs
-            for dirpath, dirnames, _filenames in os.walk(account_dir):
-                dp = Path(dirpath)
-                if dp.name.endswith(".mbox") and (dp / "Messages").is_dir():
-                    messages_dir = dp / "Messages"
+            if mailbox_root is None:
+                logger.debug(f"Skipping .emlx files outside .mbox tree: {dp}")
+                continue
 
-                    # Collect .emlx files
-                    emlx_files = sorted(
-                        [
-                            f
-                            for f in messages_dir.iterdir()
-                            if f.is_file() and f.name.endswith(".emlx")
-                        ],
-                        key=lambda p: _emlx_sort_key(p.name),
-                    )
+            files = grouped.setdefault(mailbox_root, [])
+            files.extend(dp / name for name in emlx_names)
 
-                    if not emlx_files:
-                        continue
+        for mailbox_root, emlx_files_unsorted in grouped.items():
+            emlx_files = sorted(emlx_files_unsorted, key=lambda p: _emlx_sort_key(p.name))
+            if not emlx_files:
+                continue
 
-                    # Derive human-readable name from path
-                    try:
-                        rel = dp.relative_to(account_dir)
-                    except ValueError:
-                        rel = Path(dp.name)
-                    parts = [
-                        p.removesuffix(".mbox") for p in rel.parts if p.endswith(".mbox")
-                    ]
-                    name = "/".join(parts) if parts else dp.name.removesuffix(".mbox")
+            # Derive mailbox path from nested .mbox components when available.
+            try:
+                rel = mailbox_root.relative_to(v_dir)
+            except ValueError:
+                rel = Path(mailbox_root.name)
+            parts = [p.removesuffix(".mbox") for p in rel.parts if p.endswith(".mbox")]
+            name = "/".join(parts) if parts else mailbox_root.name.removesuffix(".mbox")
 
-                    mailboxes.append(
-                        MailboxInfo(
-                            name=name,
-                            path=dp,
-                            emlx_files=emlx_files,
-                            message_count=len(emlx_files),
-                            account_id=account_id,
-                        )
-                    )
+            # Best-effort account identifier: first path component under V*.
+            account_id = rel.parts[0] if rel.parts else "UNKNOWN"
+
+            mailboxes.append(
+                MailboxInfo(
+                    name=name,
+                    path=mailbox_root,
+                    emlx_files=emlx_files,
+                    message_count=len(emlx_files),
+                    account_id=account_id,
+                )
+            )
 
     # Handle duplicate names across accounts
     name_counts: dict[str, int] = {}
@@ -927,7 +965,24 @@ def _run_self_test_inner(tmpdir: Path, logger: Logger) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apple-mail-export",
-        description="Export Apple Mail .emlx files to standard .mbox format.",
+        usage="apple-mail-export [OPTIONS] [OUTPUT_DIR]",
+        description=(
+            "Export Apple Mail .emlx files to standard .mbox format.\n\n"
+            "Synopsis:\n"
+            "  apple-mail-export [OPTIONS] [OUTPUT_DIR]\n\n"
+            "Options:\n"
+            "  --mail-dir PATH   Apple Mail data directory\n"
+            "  --mailbox GLOB    Filter mailbox names (e.g., INBOX, Work/*)\n"
+            "  --verify          Run post-export verification (default)\n"
+            "  --no-verify       Skip post-export verification\n"
+            "  --quiet           Only print summary and errors\n"
+            "  --verbose         Print debug-level detail\n"
+            "  --dry-run         Scan and report without writing files\n"
+            "  --self-test       Run built-in self-test and exit\n"
+            "  --version         Print version and exit\n"
+            "  -h, --help        Show this help message and exit"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "output_dir",
