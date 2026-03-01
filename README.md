@@ -146,7 +146,10 @@ MIT
 
 ## Authorship and AI Assistance
 
-The Author is responsible for the Why, What and most of the How. An AI Assistant contributes implementation (How) and reviews it against best practices retrieved from 
-AI LLM models or live sources, with Author verifying for factfulness and soundness.
+Primary author: Gregor Heinrich.
 
-Initiative, judgement and accountability rest with the Author and their "4 Cs": creativity, communication, collaboration and critical thinking.
+AI tools (Claude Code Opus 4.6 and GPT 5.3 Codex) were used for drafting, refactoring and test scaffolding.
+
+All designs, final decisions, code review, testing, and release approval were performed by the author.
+
+The author is accountable for correctness, licensing, and security of the published work.
