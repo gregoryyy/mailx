@@ -772,7 +772,7 @@ def print_summary(
     verified_str = ""
     if verification_results:
         total_verified = sum(vr.verified_count for vr in verification_results)
-        verified_str = f" + verified"
+        verified_str = f" + hashes verified"
         msg_detail = f"{total_found:,} found \u2192 {total_exported:,} exported{verified_str}"
     else:
         msg_detail = f"{total_found:,} found \u2192 {total_exported:,} exported"
