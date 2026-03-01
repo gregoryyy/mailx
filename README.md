@@ -185,5 +185,5 @@ The author is accountable for correctness, licensing and security of the publish
 
 ## History
 
-- v0.2 modularized code
-- v0.1 refactor to split monolith + create package
+- v0.2 modularized code + create package
+- v0.1 working monolith with tests
