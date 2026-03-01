@@ -755,50 +755,59 @@ class TestCLI:
         exit_code = ame.main(["--self-test"])
         assert exit_code == ame.EXIT_SUCCESS
 
-    def test_dry_run(self, mail_tree, capsys):
+    def test_default_lists_mailboxes(self, mail_tree):
         mail_root, output_dir = mail_tree
         exit_code = ame.main([
             "--mail-dir", str(mail_root),
-            "--dry-run",
             "--quiet",
-            str(output_dir),
         ])
         assert exit_code == ame.EXIT_SUCCESS
-        # Should not have created any .mbox files
+        # List mode should not create .mbox files.
         assert list(output_dir.glob("*.mbox")) == []
 
     def test_full_export(self, mail_tree):
         mail_root, output_dir = mail_tree
         exit_code = ame.main([
+            "--export",
             "--mail-dir", str(mail_root),
+            "--output-dir", str(output_dir),
             "--quiet",
-            str(output_dir),
         ])
-        # Exit code 1 (partial) because of corrupt file
+        # Exit code 1 (partial) because of one corrupt file.
         assert exit_code == ame.EXIT_PARTIAL
-        # Should have created mbox files
         mbox_files = list(output_dir.glob("**/*.mbox"))
         assert len(mbox_files) >= 2
+        # Export implies verify unless --no-verify is set.
+        assert (output_dir / "verification-report.json").exists()
 
     def test_full_export_no_verify(self, mail_tree):
         mail_root, output_dir = mail_tree
         exit_code = ame.main([
+            "--export",
             "--mail-dir", str(mail_root),
+            "--output-dir", str(output_dir),
             "--no-verify",
             "--quiet",
-            str(output_dir),
         ])
         assert exit_code == ame.EXIT_PARTIAL
-        # No verification report should exist
         assert not (output_dir / "verification-report.json").exists()
 
-    def test_export_with_verify(self, mail_tree):
+    def test_verify_existing_exports(self, mail_tree):
         mail_root, output_dir = mail_tree
-        exit_code = ame.main([
+        first = ame.main([
+            "--export",
             "--mail-dir", str(mail_root),
-            "--verify",
+            "--output-dir", str(output_dir),
+            "--no-verify",
             "--quiet",
-            str(output_dir),
+        ])
+        assert first == ame.EXIT_PARTIAL
+
+        exit_code = ame.main([
+            "--verify",
+            "--mail-dir", str(mail_root),
+            "--output-dir", str(output_dir),
+            "--quiet",
         ])
         assert exit_code == ame.EXIT_PARTIAL
         assert (output_dir / "verification-report.json").exists()
@@ -806,46 +815,46 @@ class TestCLI:
     def test_no_mailboxes_found(self, tmp_path):
         empty = tmp_path / "empty_mail"
         empty.mkdir()
-        out = tmp_path / "out"
-        out.mkdir()
         exit_code = ame.main([
             "--mail-dir", str(empty),
             "--quiet",
-            str(out),
         ])
         assert exit_code == ame.EXIT_FATAL
 
-    def test_mailbox_filter(self, mail_tree):
+    def test_glob_argument_filter(self, mail_tree):
         mail_root, output_dir = mail_tree
         exit_code = ame.main([
+            "--export",
             "--mail-dir", str(mail_root),
-            "--mailbox", "Work/*",
+            "--output-dir", str(output_dir),
             "--quiet",
-            str(output_dir),
+            "Work/*",
         ])
         assert exit_code == ame.EXIT_SUCCESS
-        # Should only have Work/Projects.mbox
         mbox_files = list(output_dir.glob("**/*.mbox"))
         assert len(mbox_files) == 1
 
-    def test_existing_mbox_files_rejected(self, mail_tree):
+    def test_existing_mbox_files_are_overwritten(self, mail_tree):
         mail_root, output_dir = mail_tree
-        # Create a pre-existing .mbox file
-        (output_dir / "old.mbox").write_bytes(b"fake")
+        inbox_out = output_dir / "INBOX.mbox"
+        inbox_out.write_bytes(b"fake")
 
         exit_code = ame.main([
+            "--export",
             "--mail-dir", str(mail_root),
+            "--output-dir", str(output_dir),
             "--quiet",
-            str(output_dir),
         ])
-        assert exit_code == ame.EXIT_FATAL
+        assert exit_code in (ame.EXIT_SUCCESS, ame.EXIT_PARTIAL)
+        assert inbox_out.read_bytes() != b"fake"
 
     def test_export_log_created(self, mail_tree):
         mail_root, output_dir = mail_tree
         ame.main([
+            "--export",
             "--mail-dir", str(mail_root),
+            "--output-dir", str(output_dir),
             "--quiet",
-            str(output_dir),
         ])
         assert (output_dir / "export-log.txt").exists()
 
@@ -853,9 +862,10 @@ class TestCLI:
         mail_root, output_dir = mail_tree
         new_out = output_dir / "nested" / "deep"
         ame.main([
+            "--export",
             "--mail-dir", str(mail_root),
+            "--output-dir", str(new_out),
             "--quiet",
-            str(new_out),
         ])
         assert new_out.exists()
 

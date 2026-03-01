@@ -21,6 +21,7 @@ import signal
 import sys
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Callable, Optional
@@ -168,6 +169,15 @@ def _emlx_sort_key(filename: str) -> tuple:
 def _sanitize_name(name: str) -> str:
     """Replace filesystem-unsafe characters with underscores."""
     return UNSAFE_CHARS_RE.sub("_", name)
+
+
+def _output_path_for_mailbox(output_dir: Path, mailbox_name: str) -> Path:
+    """Map mailbox name to output .mbox path, preserving nested hierarchy."""
+    safe_name = _sanitize_name(mailbox_name)
+    parts = safe_name.split("/")
+    if len(parts) > 1:
+        return output_dir / "/".join(parts[:-1]) / f"{parts[-1]}.mbox"
+    return output_dir / f"{safe_name}.mbox"
 
 
 def scan_mailboxes(
@@ -418,6 +428,40 @@ def _unescape_from_lines(msg_bytes: bytes) -> bytes:
     return FROM_UNESCAPE_RE.sub(rb"\1", msg_bytes)
 
 
+def _hash_for_mbox_verification(rfc822_bytes: bytes) -> str:
+    """Hash message bytes in normalized form used by mbox verification."""
+    hash_bytes = rfc822_bytes
+    if not rfc822_bytes.endswith(b"\n"):
+        hash_bytes = rfc822_bytes + b"\n"
+    return hashlib.sha256(hash_bytes).hexdigest()
+
+
+def build_expected_hashes(
+    emlx_files: list[Path],
+    logger: Logger,
+) -> tuple[dict[str, str], int, list[Path], int]:
+    """Parse .emlx files and compute expected message hashes.
+
+    Returns (hashes, failed_count, failed_paths, partial_count).
+    """
+    hashes: dict[str, str] = {}
+    failed_count = 0
+    failed_paths: list[Path] = []
+    partial_count = 0
+
+    for emlx_path in emlx_files:
+        rfc822_bytes, is_partial = parse_emlx(emlx_path, logger)
+        if rfc822_bytes is None:
+            failed_count += 1
+            failed_paths.append(emlx_path)
+            continue
+        if is_partial:
+            partial_count += 1
+        hashes[emlx_path.name] = _hash_for_mbox_verification(rfc822_bytes)
+
+    return hashes, failed_count, failed_paths, partial_count
+
+
 # ---------------------------------------------------------------------------
 # Writer
 # ---------------------------------------------------------------------------
@@ -470,14 +514,7 @@ def write_mbox(
                 # Escape From lines in body
                 escaped = _escape_from_lines(rfc822_bytes)
 
-                # Compute SHA-256 of message as it will be stored in mbox.
-                # The mbox format requires messages to end with \n, so if the
-                # original doesn't, we normalize before hashing.
-                hash_bytes = rfc822_bytes
-                if not rfc822_bytes.endswith(b"\n"):
-                    hash_bytes = rfc822_bytes + b"\n"
-                h = hashlib.sha256(hash_bytes).hexdigest()
-                hashes[emlx_path.name] = h
+                hashes[emlx_path.name] = _hash_for_mbox_verification(rfc822_bytes)
 
                 # Write separator + escaped message + blank line terminator
                 try:
@@ -613,6 +650,51 @@ def _format_bytes(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1_000:.1f} KB"
     return f"{n} B"
+
+
+def _display_width(s: str) -> int:
+    """Approximate terminal cell width for a Unicode string."""
+    width = 0
+    for ch in s:
+        if unicodedata.combining(ch):
+            continue
+        if unicodedata.east_asian_width(ch) in ("W", "F"):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def _pad_display(s: str, width: int) -> str:
+    """Pad with spaces to a target terminal display width."""
+    pad = max(0, width - _display_width(s))
+    return s + (" " * pad)
+
+
+def _truncate_display(s: str, width: int) -> str:
+    """Truncate a string to target terminal display width (with ellipsis)."""
+    if width <= 0:
+        return ""
+    if _display_width(s) <= width:
+        return s
+    if width == 1:
+        return "…"
+
+    out: list[str] = []
+    used = 0
+    target = width - 1  # reserve one cell for ellipsis
+    for ch in s:
+        if unicodedata.combining(ch):
+            # Keep combining marks attached to prior base char when possible.
+            if out:
+                out.append(ch)
+            continue
+        ch_w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if used + ch_w > target:
+            break
+        out.append(ch)
+        used += ch_w
+    return "".join(out) + "…"
 
 
 def write_verification_report(
@@ -962,35 +1044,46 @@ def _run_self_test_inner(tmpdir: Path, logger: Logger) -> int:
 # ---------------------------------------------------------------------------
 
 
+class MailExportArgumentParser(argparse.ArgumentParser):
+    def print_help(self, file=None) -> None:
+        super().print_help(file=file)
+        stream = file if file is not None else sys.stdout
+        stream.write("\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = MailExportArgumentParser(
         prog="apple-mail-export",
-        usage="apple-mail-export [OPTIONS] [OUTPUT_DIR]",
+        usage="apple-mail-export [OPTIONS] [GLOB]",
         description=(
             "Export Apple Mail .emlx files to standard .mbox format.\n\n"
             "Synopsis:\n"
-            "  apple-mail-export [OPTIONS] [OUTPUT_DIR]\n\n"
-            "Options:\n"
-            "  --mail-dir PATH   Apple Mail data directory\n"
-            "  --mailbox GLOB    Filter mailbox names (e.g., INBOX, Work/*)\n"
-            "  --verify          Run post-export verification (default)\n"
-            "  --no-verify       Skip post-export verification\n"
-            "  --quiet           Only print summary and errors\n"
-            "  --verbose         Print debug-level detail\n"
-            "  --dry-run         Scan and report without writing files\n"
-            "  --self-test       Run built-in self-test and exit\n"
-            "  --version         Print version and exit\n"
-            "  -h, --help        Show this help message and exit"
+            "  apple-mail-export [OPTIONS] [GLOB]"
+        ),
+        epilog=(
+            "Typical workflow:\n"
+            "  1) apple-mail-export [--list]\n"
+            "  2) apple-mail-export --export [GLOB]\n\n"
+            "Mailbox glob syntax (fnmatch):\n"
+            "  *       match any characters\n"
+            "  ?       match one character\n"
+            "  [abc]   match one char in set\n"
+            "  [!abc]  match one char not in set\n\n"
+            "Examples:\n"
+            "  apple-mail-export --list \"INBOX/*\"\n"
+            "  apple-mail-export --export \"*Sent*\"\n"
+            "  apple-mail-export --verify \"[Gg]mail/*\"\n\n"
+            "Tip:\n"
+            "  Quote glob patterns so your shell does not expand them first.\n\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "output_dir",
+        "glob",
         nargs="?",
-        type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        metavar="OUTPUT_DIR",
-        help="Output directory for .mbox files (default: ./mail-export/)",
+        default="*",
+        metavar="GLOB",
+        help='Mailbox glob filter (default: "*")',
     )
     parser.add_argument(
         "--mail-dir",
@@ -999,22 +1092,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apple Mail data directory (default: ~/Library/Mail)",
     )
     parser.add_argument(
-        "--mailbox",
-        default="*",
-        help='Glob pattern to filter mailbox names (e.g., "INBOX", "Work/*")',
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Output directory for .mbox files (default: ./mail-export/)",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List matching mailboxes and exit (default action)",
+    )
+    parser.add_argument(
+        "--export",
+        action="store_true",
+        help="Export matching mailbox(es)",
     )
     parser.add_argument(
         "--verify",
-        dest="verify",
         action="store_true",
-        default=True,
-        help="Run post-export verification (default)",
+        help="Verify existing or newly exported mailbox(es)",
     )
     parser.add_argument(
         "--no-verify",
-        dest="verify",
-        action="store_false",
-        help="Skip post-export verification",
+        action="store_true",
+        help="With --export, skip post-export verification",
     )
     parser.add_argument(
         "--quiet",
@@ -1025,11 +1126,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Print debug-level detail (file paths, timing)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Scan and report without writing any files",
     )
     parser.add_argument(
         "--version",
@@ -1052,31 +1148,38 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.quiet and args.verbose:
         parser.error("--quiet and --verbose are mutually exclusive")
+    if args.no_verify and not args.export:
+        parser.error("--no-verify is only valid with --export")
 
     # Handle self-test early (no log file, no output dir needed)
     if args.self_test:
         logger = Logger(quiet=False, verbose=True)
         return run_self_test(logger)
 
-    output_dir: Path = args.output_dir.resolve()
+    glob_pattern: str = args.glob
     mail_dir: Path = args.mail_dir.resolve()
+    output_dir: Path = args.output_dir.resolve()
 
-    # Check for existing .mbox files in output directory
-    if output_dir.exists():
-        existing = list(output_dir.glob("**/*.mbox"))
-        if existing:
+    action_list = args.list or (not args.export and not args.verify)
+    action_export = args.export
+    # Export implies verify unless explicitly disabled.
+    action_verify = args.verify or (args.export and not args.no_verify)
+
+    if action_list and (action_export or args.verify):
+        parser.error("--list cannot be combined with --export or --verify")
+
+    log_fh: Optional[IO] = None
+    if action_export:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_fh = open(output_dir / "export-log.txt", "w")
+    elif action_verify:
+        if not output_dir.exists():
             print(
-                f"ERROR: Output directory already contains .mbox files: {output_dir}\n"
-                "Remove existing files or choose a different output directory.",
+                f"ERROR: Output directory not found: {output_dir}",
                 file=sys.stderr,
             )
             return EXIT_FATAL
-    else:
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Set up log file
-    log_file_path = output_dir / "export-log.txt"
-    log_fh = open(log_file_path, "w")
+        log_fh = open(output_dir / "export-log.txt", "a")
 
     logger = Logger(quiet=args.quiet, verbose=args.verbose, log_file=log_fh)
 
@@ -1093,11 +1196,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         # Scan
         logger.info(f"Scanning {mail_dir}/ ...")
-        mailboxes = scan_mailboxes(mail_dir, args.mailbox, logger)
+        mailboxes = scan_mailboxes(mail_dir, glob_pattern, logger)
 
         if not mailboxes:
-            if args.mailbox != "*":
-                logger.error(f"No mailboxes match pattern '{args.mailbox}'.")
+            if glob_pattern != "*":
+                logger.error(f"No mailboxes match pattern '{glob_pattern}'.")
             else:
                 logger.error(
                     f"No mailboxes found. Check --mail-dir path: {mail_dir}"
@@ -1113,66 +1216,108 @@ def main(argv: Optional[list[str]] = None) -> int:
             f"{total_messages:,} messages ({_format_bytes(total_size)})"
         )
 
-        # Dry run: just report and exit
-        if args.dry_run:
+        # List action
+        if action_list:
             logger.info("")
-            logger.info("DRY RUN — no files will be written.")
+            logger.info("MAILBOXES")
             logger.info("")
+            max_name_width = max((_display_width(mb.name) for mb in mailboxes), default=0)
+            # Keep table readable on typical terminals while preserving alignment.
+            name_col_width = max(30, min(52, max_name_width))
             for mb in mailboxes:
                 mb_size = sum(f.stat().st_size for f in mb.emlx_files)
+                name_col = _pad_display(
+                    _truncate_display(mb.name, name_col_width),
+                    name_col_width,
+                )
                 logger.info(
-                    f"  {mb.name:<30s}  {mb.message_count:>8,} messages  "
+                    f"  {name_col}  {mb.message_count:>8,} messages  "
                     f"({_format_bytes(mb_size)})"
                 )
             return EXIT_SUCCESS
 
-        # Export
-        logger.info("")
-        logger.info("Exporting mailboxes:")
-
         export_results: list[ExportResult] = []
         verification_results: list[VerificationResult] = []
 
-        for mb in mailboxes:
-            if _interrupted:
-                break
+        # Export action
+        if action_export:
+            logger.info("")
+            logger.info("Exporting mailboxes:")
 
-            # Build output path, preserving hierarchy
-            safe_name = _sanitize_name(mb.name)
-            parts = safe_name.split("/")
-            if len(parts) > 1:
-                mbox_out = output_dir / "/".join(parts[:-1]) / f"{parts[-1]}.mbox"
-            else:
-                mbox_out = output_dir / f"{safe_name}.mbox"
-            mbox_out.parent.mkdir(parents=True, exist_ok=True)
+            for mb in mailboxes:
+                if _interrupted:
+                    break
 
-            export_start = time.monotonic()
+                mbox_out = _output_path_for_mailbox(output_dir, mb.name)
+                mbox_out.parent.mkdir(parents=True, exist_ok=True)
 
-            def make_progress_cb(mb_name: str, t0: float):
-                def cb(current: int, total: int):
-                    elapsed = max(time.monotonic() - t0, 0.001)
-                    rate = current / elapsed
-                    logger.progress(mb_name, current, total, rate)
-                return cb
+                export_start = time.monotonic()
 
-            result = write_mbox(
-                mbox_out,
-                mb.emlx_files,
-                mb.name,
-                logger,
-                progress_callback=make_progress_cb(mb.name, export_start),
-            )
-            export_results.append(result)
+                def make_progress_cb(mb_name: str, t0: float):
+                    def cb(current: int, total: int):
+                        elapsed = max(time.monotonic() - t0, 0.001)
+                        rate = current / elapsed
+                        logger.progress(mb_name, current, total, rate)
+                    return cb
 
-            if result.messages_failed > 0:
-                exit_code = EXIT_PARTIAL
+                result = write_mbox(
+                    mbox_out,
+                    mb.emlx_files,
+                    mb.name,
+                    logger,
+                    progress_callback=make_progress_cb(mb.name, export_start),
+                )
+                export_results.append(result)
 
-        # Verify
-        if args.verify and export_results and not _interrupted:
+                if result.messages_failed > 0:
+                    exit_code = EXIT_PARTIAL
+
+        # Verify action (for both new exports and existing exports)
+        if action_verify and not _interrupted:
             logger.info("")
             logger.info("Verifying exports...")
 
+            if not action_export:
+                # Build expected hashes directly from source .emlx files.
+                for mb in mailboxes:
+                    mbox_out = _output_path_for_mailbox(output_dir, mb.name)
+                    hashes, failed, failed_paths, partial_count = build_expected_hashes(
+                        mb.emlx_files, logger
+                    )
+                    if failed > 0:
+                        exit_code = EXIT_PARTIAL
+                    export_results.append(
+                        ExportResult(
+                            mailbox_name=mb.name,
+                            output_path=mbox_out,
+                            messages_written=len(hashes),
+                            messages_failed=failed,
+                            failed_paths=failed_paths,
+                            hashes=hashes,
+                            partial_count=partial_count,
+                            bytes_written=mbox_out.stat().st_size if mbox_out.exists() else 0,
+                        )
+                    )
+
             for result in export_results:
+                if not result.output_path.exists():
+                    exit_code = EXIT_PARTIAL
+                    logger.info(
+                        f"  {result.mailbox_name:<22s}  \u2717  missing output mbox "
+                        f"({result.output_path})"
+                    )
+                    verification_results.append(
+                        VerificationResult(
+                            mailbox_name=result.mailbox_name,
+                            expected_count=len(result.hashes),
+                            verified_count=0,
+                            mismatched=[],
+                            missing=list(result.hashes.keys()),
+                            extra=0,
+                        )
+                    )
+                    continue
+
                 vr = verify_mbox(
                     result.output_path, result.hashes, result.mailbox_name
                 )
@@ -1214,7 +1359,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             mail_dir,
             output_dir,
             export_results,
-            verification_results if args.verify else None,
+            verification_results if action_verify else None,
             duration,
             logger,
         )
@@ -1227,7 +1372,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     finally:
         signal.signal(signal.SIGINT, prev_handler)
-        log_fh.close()
+        if log_fh:
+            log_fh.close()
 
 
 # ---------------------------------------------------------------------------
