@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mailx-export"
+version = "0.2.0"
+description = "Export Apple Mail .emlx mailboxes to standard .mbox format."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "Gregor Heinrich" },
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0",
+]
+
+[tool.setuptools]
+packages = ["mailx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

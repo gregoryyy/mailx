@@ -1,13 +1,25 @@
 # MAILX: apple-mail-export
 
-A single-file Python CLI tool that exports Apple Mail mailboxes to standard `.mbox` format by reading directly from Apple Mail's on-disk `.emlx` storage.
+A modular Python CLI tool that exports Apple Mail mailboxes to standard `.mbox` format by reading directly from Apple Mail's on-disk `.emlx` storage.
 
 Designed for power users migrating or backing up large mailboxes (100k+ messages, 10GB+). Zero external dependencies — stdlib only.
 
 **Author:** Gregor Heinrich  
 **Assistants:** Claude Code Opus 4.6, GPT 5.3 Codex  
 **Date:** February 2026  
-**Version:** v0.1
+**Version:** v0.2
+
+## Motivation
+
+The need: 
+- Apple Mail export is notoriously brittle, breaking without notice for unknown reasons.
+- Apple Mail admin actions like moving messages between mailboxes are intransparent and brittle as well, esp. with larger mailboxes.  Infinite "Moving...", "Copying...", "Rebuiding...", "Downloading..."
+
+The solutions:
+- Existing solutions don't always seem to be up to date.
+- AI-assisted coding based on known requirements allows fast implementation of good-quality software.
+
+--> Normally, this project would have been a clear "Buy" not "Make".  But after trying the second tool in vain, I started giving "Make" a shot.  It took <1h to v0.1 and another 20' for the refactor to v0.2.  AI is an extreme efficiency booster if you know what you want and what a good result looks like.
 
 ## Requirements
 
@@ -92,25 +104,25 @@ Apple Mail data at `~/Library/Mail/` is protected by macOS. Your terminal app ne
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 ```
 
 ### Running Tests
 
 ```bash
 # Run the full test suite (90 tests)
-pytest test_apple_mail_export.py -v
+pytest tests -v
 
 # Run a specific test class
-pytest test_apple_mail_export.py::TestParseEmlx -v
-pytest test_apple_mail_export.py::TestFromEscaping -v
-pytest test_apple_mail_export.py::TestScanner -v
-pytest test_apple_mail_export.py::TestWriter -v
-pytest test_apple_mail_export.py::TestVerifier -v
-pytest test_apple_mail_export.py::TestCLI -v
+pytest tests/test_mailx_emlx.py::TestParseEmlx -v
+pytest tests/test_mailx_emlx.py::TestFromEscaping -v
+pytest tests/test_mailx_scan.py::TestScanner -v
+pytest tests/test_mailx_mbox.py::TestWriter -v
+pytest tests/test_mailx_mbox.py::TestVerifier -v
+pytest tests/test_mailx_cli.py::TestCLI -v
 
 # Run a single test
-pytest test_apple_mail_export.py::TestVerifier::test_tampered_mbox_detects_mismatch -v
+pytest tests/test_mailx_mbox.py::TestVerifier::test_tampered_mbox_detects_mismatch -v
 ```
 
 ### Built-in Self-Test
@@ -141,11 +153,21 @@ python3 apple-mail-export.py --verify --output-dir ~/backup/mail-export/
 
 The tool has five logical stages:
 
-1. **Scanner** — Discovers mailboxes under `~/Library/Mail/V{9,10}/` by finding `.mbox` directories that contain `Messages/` subdirectories
-2. **Parser** — Reads each `.emlx` file (Apple's per-message format): parses the byte count header, extracts the RFC 822 message body
-3. **Writer** — Writes messages to standard `.mbox` files (RFC 4155) with proper `From ` separators and mboxrd escaping
-4. **Verifier** — Re-reads each `.mbox` file, splits messages, un-escapes, and compares SHA-256 hashes against the originals
+1. **Scanner** — Discovers mailboxes and `.emlx` files across Apple Mail layout variants
+2. **Parser** — Reads each `.emlx` file (byte count + RFC 822 payload)
+3. **Writer** — Writes standard `.mbox` output (RFC 4155 + mboxrd escaping)
+4. **Verifier** — Re-reads `.mbox` files and compares SHA-256 message hashes
 5. **Reporter** — Generates terminal output, `verification-report.json`, and `export-log.txt`
+
+### Module Layout
+
+- `apple-mail-export.py` — CLI entrypoint, argument parsing, action orchestration (`--list`, `--export`, `--verify`)
+- `mailx/model.py` — shared constants, exit codes, and dataclasses
+- `mailx/logger.py` — terminal and file logging
+- `mailx/scan.py` — mailbox discovery and name/output-path helpers
+- `mailx/emlx.py` — `.emlx` parsing and message-level helpers
+- `mailx/mbox.py` — mbox writing, expected-hash building, and verification
+- `mailx/report.py` — formatting, summaries, and verification report writing
 
 ## License
 
@@ -153,10 +175,15 @@ MIT
 
 ## Authorship and AI Assistance
 
-Primary author: Gregor Heinrich.
+Primary author: Gregor Heinrich
 
-AI tools (Claude Code Opus 4.6 and GPT 5.3 Codex) were used for drafting, refactoring and test scaffolding.
+AI tools were used for drafting, implementation, refactoring and test scaffolding based on specific author instructions. LLM agents are used in narrow loops between specification, context and outputs, all in verifiable files.
 
-All designs, final decisions, code review, testing, and release approval were performed by the author.
+All designs, final decisions, code review, testing and release approval were performed by the author.
 
-The author is accountable for correctness, licensing, and security of the published work.
+The author is accountable for correctness, licensing and security of the published work.
+
+## History
+
+v0.2 modularized code
+v0.1 refactor to split monolith + create package
