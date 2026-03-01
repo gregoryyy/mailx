@@ -18,17 +18,17 @@ Designed for power users migrating or backing up large mailboxes (100k+ messages
 ## Quick Start
 
 ```bash
-# Run with default settings (exports all mailboxes to ./mail-export/)
+# List all discovered mailboxes (default action)
 python3 apple-mail-export.py
 
-# Export to a specific directory
-python3 apple-mail-export.py ~/backup/mail-2026/
+# Explicit list mode with a filter
+python3 apple-mail-export.py --list "INBOX/*"
 
-# Export only INBOX
-python3 apple-mail-export.py --mailbox "INBOX" ~/backup/mail-2026/
+# Export one mailbox (export implies verify unless --no-verify)
+python3 apple-mail-export.py --export "INBOX" --output-dir ~/backup/mail-2026/
 
-# Dry run — see what would be exported without writing files
-python3 apple-mail-export.py --dry-run
+# Verify existing exports
+python3 apple-mail-export.py --verify --output-dir ~/backup/mail-2026/
 
 # Validate the tool works correctly with synthetic data
 python3 apple-mail-export.py --self-test
@@ -37,20 +37,24 @@ python3 apple-mail-export.py --self-test
 ## Usage
 
 ```
-apple-mail-export [OPTIONS] [OUTPUT_DIR]
+apple-mail-export [OPTIONS] [GLOB]
 ```
 
 | Argument / Flag | Default | Description |
 |---|---|---|
-| `OUTPUT_DIR` | `./mail-export/` | Output directory for `.mbox` files |
+| `GLOB` | `*` | Glob pattern to filter mailbox names |
 | `--mail-dir PATH` | `~/Library/Mail` | Override Apple Mail data directory |
-| `--mailbox PATTERN` | `*` | Glob pattern to filter mailbox names |
-| `--verify` / `--no-verify` | `--verify` | Run post-export SHA-256 verification |
+| `--output-dir DIR` | `./mail-export/` | Output directory for `.mbox` files |
+| `--list` | default action | List matching mailboxes and exit |
+| `--export` | off | Export matching mailbox(es) |
+| `--verify` | off | Verify matching mailbox exports (new or existing) |
+| `--no-verify` | off | With `--export`, skip post-export verification |
 | `--quiet` | off | Only print summary and errors |
 | `--verbose` | off | Print debug-level detail |
-| `--dry-run` | off | Scan and report without writing files |
 | `--self-test` | — | Run self-test with synthetic data and exit |
 | `--version` | — | Print version and exit |
+
+Quote glob patterns (for example `"INBOX/*"`), so your shell does not expand them before the tool receives them.
 
 ### Exit Codes
 
@@ -120,14 +124,17 @@ python3 apple-mail-export.py --self-test
 ### Running the Tool
 
 ```bash
-# Dry run against real Apple Mail data (requires Full Disk Access)
-python3 apple-mail-export.py --dry-run
+# List all mailboxes (requires Full Disk Access)
+python3 apple-mail-export.py
 
-# Export all mailboxes
-python3 apple-mail-export.py ~/backup/mail-export/
+# Export all mailboxes to a target directory
+python3 apple-mail-export.py --export --output-dir ~/backup/mail-export/
 
 # Export a single mailbox with verbose output
-python3 apple-mail-export.py --mailbox "INBOX" --verbose ~/backup/mail-export/
+python3 apple-mail-export.py --export --verbose --output-dir ~/backup/mail-export/ "INBOX"
+
+# Verify existing exports only (no rewrite)
+python3 apple-mail-export.py --verify --output-dir ~/backup/mail-export/
 ```
 
 ## How It Works
