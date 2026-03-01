@@ -1,8 +1,13 @@
-# apple-mail-export
+# MAILX: apple-mail-export
 
 A single-file Python CLI tool that exports Apple Mail mailboxes to standard `.mbox` format by reading directly from Apple Mail's on-disk `.emlx` storage.
 
 Designed for power users migrating or backing up large mailboxes (100k+ messages, 10GB+). Zero external dependencies — stdlib only.
+
+**Author:** Gregor Heinrich  
+**Assistants:** Claude Code Opus 4.6, GPT 5.3 Codex  
+**Date:** February 2026  
+**Version:** v0.1
 
 ## Requirements
 
@@ -138,3 +143,10 @@ The tool has five logical stages:
 ## License
 
 MIT
+
+## Authorship and AI Assistance
+
+The Author is responsible for the Why, What and most of the How. An AI Assistant contributes implementation (How) and reviews it against best practices retrieved from 
+AI LLM models or live sources, with Author verifying for factfulness and soundness.
+
+Initiative, judgement and accountability rest with the Author and their "4 Cs": creativity, communication, collaboration and critical thinking.

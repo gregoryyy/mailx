@@ -109,6 +109,20 @@ Each `.emlx` file has this structure:
 - **Lines 2+:** The raw RFC 822 email message (headers + body), exactly `byte_count` bytes.
 - **Remainder:** Optional Apple plist XML with flags, date received, etc. We discard this.
 
+#### Required Content Rules
+
+- The first line must parse as an integer.
+- The byte count must be `>= 0`.
+- The file must contain at least `byte_count` bytes after the first line.
+- The RFC 822 section may contain plain text, HTML, or MIME multipart content.
+
+#### Parser Behavior for This Tool
+
+- Read first line as byte count.
+- Read exactly `byte_count` bytes as the message payload.
+- Ignore all remaining trailing bytes (Apple metadata).
+- If byte count is invalid, negative, or payload is truncated, treat the file as corrupt and continue.
+
 ### `.partial.emlx` Files
 
 These contain messages that were only partially downloaded. The tool should:
